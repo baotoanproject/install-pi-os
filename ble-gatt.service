@@ -1,0 +1,10 @@
+[Unit]
+Description=BLE Advertise
+After=bluetooth.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/orangepi/new-ble-gatt-1.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

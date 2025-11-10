@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Chromium Kiosk
+Comment=Launch Chromium in kiosk mode
+Exec=sh -c 'sleep 5; /usr/local/bin/reset-profile.sh; chromium --kiosk --noerrdialogs --autoplay-policy=no-user-gesture-required https://wb.wayfindy.com --user-data-dir=/home/orangepi/chromium-profile'
+X-GNOME-Autostart-enabled=true

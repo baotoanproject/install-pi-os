@@ -1,0 +1,12 @@
+[Unit]
+Description=Disable Bluetooth Pairable
+After=bluetooth.target
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bt-no-pair.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

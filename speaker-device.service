@@ -1,0 +1,18 @@
+[Unit]
+Description=Speaker Bluetooth
+After=network.target bluetooth.target pulseaudio.service
+Wants=pulseaudio.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/orangepi/bluetooth-speaker.py
+WorkingDirectory=/home/orangepi
+Restart=always
+
+User=orangepi
+Group=orangepi
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=HOME=/home/orangepi
+
+[Install]
+WantedBy=multi-user.target
