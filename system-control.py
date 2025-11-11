@@ -17,7 +17,10 @@ import base64
 from datetime import datetime
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # TCP Server configuration
@@ -37,38 +40,98 @@ class RemoteControlService:
         # Ensure upload directory exists
         os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+    def receive_full_message(self, client_socket):
+        """Nhận đầy đủ JSON message từ client"""
+        buffer = b""
+
+        try:
+            # Nhận data theo chunks
+            while True:
+                chunk = client_socket.recv(65536)  # 64KB chunks
+                if not chunk:
+                    logger.warning("No more data received")
+                    break
+
+                buffer += chunk
+                logger.debug(f"Received chunk: {len(chunk)} bytes, total buffer: {len(buffer)} bytes")
+
+                # Try to decode và parse JSON
+                try:
+                    message_str = buffer.decode('utf-8')
+
+                    # Thử parse JSON
+                    command = json.loads(message_str)
+                    logger.info(f"Successfully received complete JSON: {len(message_str)} bytes")
+                    return command
+
+                except json.JSONDecodeError as e:
+                    # JSON chưa complete, tiếp tục nhận
+                    logger.debug(f"Incomplete JSON, continuing... Error: {e}")
+
+                    # Kiểm tra size limit
+                    if len(buffer) > 200 * 1024 * 1024:  # 200MB limit
+                        logger.error("Message too large, aborting")
+                        break
+                    continue
+
+                except UnicodeDecodeError:
+                    # UTF-8 decode lỗi, có thể data chưa đủ
+                    logger.debug("Unicode decode error, continuing...")
+                    if len(buffer) > 200 * 1024 * 1024:
+                        logger.error("Message too large, aborting")
+                        break
+                    continue
+
+        except socket.error as e:
+            logger.error(f"Socket error while receiving: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error receiving message: {e}")
+
+        logger.warning("Failed to receive complete message")
+        return None
+
     def handle_client(self, client_socket, client_address):
         """Xử lý kết nối từ client"""
         logger.info(f"Client connected from {client_address}")
         self.clients.append(client_socket)
 
+        # Set socket timeout
+        client_socket.settimeout(60.0)  # 60 seconds timeout
+
         try:
             while True:
-                data = client_socket.recv(1024)
-                if not data:
+                command = self.receive_full_message(client_socket)
+                if command is None:
+                    logger.warning("Received None command, breaking connection")
                     break
 
-                try:
-                    command = json.loads(data.decode())
-                    logger.info(f"Received command: {command}")
+                if not isinstance(command, dict):
+                    logger.error(f"Invalid command type: {type(command)}")
+                    continue
 
-                    if command.get('action') == 'ping':
+                action = command.get('action', 'unknown')
+                logger.info(f"Processing command: {action}")
+
+                try:
+                    if action == 'ping':
                         # Respond to ping for device discovery
                         self.send_response(client_socket, {
                             'action': 'pong',
                             'service': 'orangepi-remote-control',
                             'version': '1.0'
                         })
-                    elif command.get('action') == 'upload_file':
+                    elif action == 'upload_file':
                         self.handle_file_upload(command, client_socket)
-                    elif command.get('action') == 'list_files':
+                    elif action == 'list_files':
                         self.list_uploaded_files(client_socket)
+                    else:
+                        logger.warning(f"Unknown action: {action}")
+                        self.send_response(client_socket, {
+                            "error": f"Unknown action: {action}"
+                        })
 
-                except json.JSONDecodeError as e:
-                    logger.error(f"Invalid JSON: {e}")
-                    self.send_response(client_socket, {"error": "Invalid JSON"})
                 except Exception as e:
-                    logger.error(f"Error handling command: {e}")
+                    logger.error(f"Error handling command '{action}': {e}")
                     self.send_response(client_socket, {"error": str(e)})
 
         except Exception as e:
