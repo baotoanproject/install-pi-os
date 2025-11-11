@@ -14,6 +14,7 @@ import time
 import os
 import hashlib
 import base64
+import sys
 from datetime import datetime
 
 # Setup logging
@@ -28,17 +29,29 @@ HOST = '0.0.0.0'
 PORT = 8767
 
 # File transfer configuration
-UPLOAD_DIR = '/home/orangepi'
+ALLOWED_EXTENSIONS = {
+    '.py': '/home/orangepi',
+    '.sh': '/usr/local/bin',
+    '.service': '/etc/systemd/system'
+}
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 CHUNK_SIZE = 64 * 1024  # 64KB chunks
+SUDO_PASSWORD = 'orangepi'
 
 class RemoteControlService:
     def __init__(self):
         self.clients = []
         self.server_socket = None
 
-        # Ensure upload directory exists
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        # Ensure upload directories exist (with proper permissions)
+        for ext, directory in ALLOWED_EXTENSIONS.items():
+            try:
+                if directory == '/home/orangepi':
+                    os.makedirs(directory, exist_ok=True)
+                # Note: /usr/local/bin and /etc/systemd/system should already exist
+                # and need root permissions to write
+            except PermissionError:
+                logger.warning(f"Cannot create directory {directory} - need root permissions")
 
     def receive_full_message(self, client_socket):
         """Nhận đầy đủ JSON message từ client"""
@@ -159,6 +172,53 @@ class RemoteControlService:
                 if client in self.clients:
                     self.clients.remove(client)
 
+    def write_file_with_sudo(self, file_path, file_data, file_ext):
+        """Ghi file với sudo permissions nếu cần"""
+        try:
+            # Thử ghi file bình thường trước
+            with open(file_path, 'wb') as f:
+                f.write(file_data)
+
+            # Set executable permissions cho .sh files
+            if file_ext == '.sh':
+                os.chmod(file_path, 0o755)
+
+            return True, "Success"
+
+        except PermissionError:
+            # Nếu không có quyền, dùng sudo
+            try:
+                logger.info(f"Using sudo to write file to {file_path}")
+
+                # Tạo temp file
+                import tempfile
+                with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                    temp_file.write(file_data)
+                    temp_file_path = temp_file.name
+
+                # Copy file với sudo
+                copy_cmd = f"echo '{SUDO_PASSWORD}' | sudo -S cp '{temp_file_path}' '{file_path}'"
+                result = subprocess.run(copy_cmd, shell=True, capture_output=True, text=True)
+
+                # Cleanup temp file
+                os.unlink(temp_file_path)
+
+                if result.returncode == 0:
+                    # Set permissions với sudo
+                    if file_ext == '.sh':
+                        chmod_cmd = f"echo '{SUDO_PASSWORD}' | sudo -S chmod 755 '{file_path}'"
+                        subprocess.run(chmod_cmd, shell=True, capture_output=True)
+
+                    return True, "Success with sudo"
+                else:
+                    return False, f"Sudo failed: {result.stderr}"
+
+            except Exception as e:
+                return False, f"Sudo error: {e}"
+
+        except Exception as e:
+            return False, f"Write error: {e}"
+
     def handle_file_upload(self, command, client_socket):
         """Xử lý upload file từ Flutter app"""
         try:
@@ -172,6 +232,18 @@ class RemoteControlService:
                     'error': 'Missing filename or file_data'
                 })
                 return
+
+            # Check file extension
+            file_ext = os.path.splitext(filename)[1].lower()
+            if file_ext not in ALLOWED_EXTENSIONS:
+                self.send_response(client_socket, {
+                    'action': 'upload_error',
+                    'error': f'File type not allowed. Allowed: {list(ALLOWED_EXTENSIONS.keys())}'
+                })
+                return
+
+            # Get destination directory based on file extension
+            destination_dir = ALLOWED_EXTENSIONS[file_ext]
 
             if file_size > MAX_FILE_SIZE:
                 self.send_response(client_socket, {
@@ -195,8 +267,8 @@ class RemoteControlService:
                 })
                 return
 
-            # Create file path
-            file_path = os.path.join(UPLOAD_DIR, filename)
+            # Create file path in the appropriate directory
+            file_path = os.path.join(destination_dir, filename)
 
             # Check if file already exists, create unique name if needed
             if os.path.exists(file_path):
@@ -204,26 +276,34 @@ class RemoteControlService:
                 counter = 1
                 while os.path.exists(file_path):
                     new_filename = f"{name}_{counter}{ext}"
-                    file_path = os.path.join(UPLOAD_DIR, new_filename)
+                    file_path = os.path.join(destination_dir, new_filename)
                     counter += 1
                 filename = os.path.basename(file_path)
 
-            # Write file
-            with open(file_path, 'wb') as f:
-                f.write(file_data)
+            # Write file với auto sudo nếu cần
+            success, message = self.write_file_with_sudo(file_path, file_data, file_ext)
 
-            # Calculate MD5 for verification
-            md5_hash = hashlib.md5(file_data).hexdigest()
+            if success:
+                # Calculate MD5 for verification
+                md5_hash = hashlib.md5(file_data).hexdigest()
 
-            logger.info(f"File uploaded successfully: {filename} ({actual_size} bytes)")
+                logger.info(f"File uploaded successfully: {filename} ({actual_size} bytes) -> {file_path} [{message}]")
 
-            self.send_response(client_socket, {
-                'action': 'upload_success',
-                'filename': filename,
-                'file_path': file_path,
-                'file_size': actual_size,
-                'md5_hash': md5_hash
-            })
+                self.send_response(client_socket, {
+                    'action': 'upload_success',
+                    'filename': filename,
+                    'file_path': file_path,
+                    'destination_dir': destination_dir,
+                    'file_size': actual_size,
+                    'md5_hash': md5_hash,
+                    'method': message
+                })
+            else:
+                self.send_response(client_socket, {
+                    'action': 'upload_error',
+                    'error': f'Failed to write file: {message}'
+                })
+                return
 
         except Exception as e:
             logger.error(f"Error handling file upload: {e}")
@@ -233,29 +313,37 @@ class RemoteControlService:
             })
 
     def list_uploaded_files(self, client_socket):
-        """Liệt kê files đã upload"""
+        """Liệt kê files đã upload từ tất cả directories"""
         try:
-            if not os.path.exists(UPLOAD_DIR):
-                files = []
-            else:
-                files = []
-                for filename in os.listdir(UPLOAD_DIR):
-                    file_path = os.path.join(UPLOAD_DIR, filename)
-                    if os.path.isfile(file_path):
-                        stat = os.stat(file_path)
-                        files.append({
-                            'filename': filename,
-                            'file_path': file_path,
-                            'size': stat.st_size,
-                            'modified_time': stat.st_mtime,
-                            'created_time': stat.st_ctime
-                        })
+            all_files = []
+
+            # List files từ từng directory theo file type
+            for file_ext, directory in ALLOWED_EXTENSIONS.items():
+                try:
+                    if os.path.exists(directory):
+                        for filename in os.listdir(directory):
+                            file_path = os.path.join(directory, filename)
+                            if os.path.isfile(file_path) and filename.endswith(file_ext):
+                                stat = os.stat(file_path)
+                                all_files.append({
+                                    'filename': filename,
+                                    'file_path': file_path,
+                                    'directory': directory,
+                                    'file_type': file_ext,
+                                    'size': stat.st_size,
+                                    'modified_time': stat.st_mtime,
+                                    'created_time': stat.st_ctime,
+                                    'permissions': oct(stat.st_mode)[-3:]
+                                })
+                except PermissionError:
+                    logger.warning(f"Cannot access directory {directory}")
+                    continue
 
             self.send_response(client_socket, {
                 'action': 'file_list',
-                'files': files,
-                'upload_dir': UPLOAD_DIR,
-                'total_files': len(files)
+                'files': all_files,
+                'directories': ALLOWED_EXTENSIONS,
+                'total_files': len(all_files)
             })
 
         except Exception as e:
@@ -324,14 +412,20 @@ class RemoteControlService:
         except Exception:
             local_ip = socket.gethostbyname(hostname)
 
-        print(f"\n{'='*50}")
+        print(f"\n{'='*60}")
         print(f"🚀 Remote Control Service STARTED")
-        print(f"{'='*50}")
+        print(f"{'='*60}")
         print(f"📡 Listening on: {HOST}:{PORT}")
         print(f"🌐 Local IP: {local_ip}")
         print(f"🏠 Hostname: {hostname}")
         print(f"📱 Flutter app connect to: {local_ip}:{PORT}")
-        print(f"{'='*50}\n")
+        print(f"")
+        print(f"📁 File Upload Restrictions:")
+        for ext, directory in ALLOWED_EXTENSIONS.items():
+            print(f"   {ext:<10} → {directory}")
+        print(f"📦 Max file size: {MAX_FILE_SIZE // (1024*1024)}MB")
+        print(f"🔐 Auto sudo: Enabled (password configured)")
+        print(f"{'='*60}\n")
 
         logger.info(f"Remote Control Service listening on {HOST}:{PORT}")
         logger.info(f"Local IP: {local_ip}")
