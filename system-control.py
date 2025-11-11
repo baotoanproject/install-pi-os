@@ -276,15 +276,8 @@ class RemoteControlService:
             # Create file path in the appropriate directory
             file_path = os.path.join(destination_dir, filename)
 
-            # Check if file already exists, create unique name if needed
-            if os.path.exists(file_path):
-                name, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(file_path):
-                    new_filename = f"{name}_{counter}{ext}"
-                    file_path = os.path.join(destination_dir, new_filename)
-                    counter += 1
-                filename = os.path.basename(file_path)
+            # Check if file exists (for logging)
+            was_overwrite = os.path.exists(file_path)
 
             # Write file với auto sudo nếu cần
             success, message = self.write_file_with_sudo(file_path, file_data, file_ext)
@@ -293,7 +286,8 @@ class RemoteControlService:
                 # Calculate MD5 for verification
                 md5_hash = hashlib.md5(file_data).hexdigest()
 
-                logger.info(f"File uploaded successfully: {filename} ({actual_size} bytes) -> {file_path} [{message}]")
+                action_type = "overwritten" if was_overwrite else "uploaded"
+                logger.info(f"File {action_type} successfully: {filename} ({actual_size} bytes) -> {file_path} [{message}]")
 
                 self.send_response(client_socket, {
                     'action': 'upload_success',
@@ -302,7 +296,8 @@ class RemoteControlService:
                     'destination_dir': destination_dir,
                     'file_size': actual_size,
                     'md5_hash': md5_hash,
-                    'method': message
+                    'method': message,
+                    'overwrite': was_overwrite
                 })
             else:
                 self.send_response(client_socket, {
