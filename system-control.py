@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 System Control Service for OrangePi Zero3
-Nhận lệnh từ Flutter app qua TCP socket để:
-- Transfer files (upload/download)
-- Control systemd services (start/stop/status)
-- Execute shell scripts
+Nhận lệnh từ Flutter app qua TCP socket để điều khiển hệ thống
+- File operations
+- Service control
+- Script execution
 Port: 8766
 """
 
@@ -17,7 +17,6 @@ import time
 import os
 import base64
 from datetime import datetime
-from pathlib import Path
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -31,7 +30,7 @@ class SystemControlService:
     def __init__(self):
         self.clients = []
         self.server_socket = None
-        self.running_scripts = {}  # Track running script processes
+        self.running_scripts = {}  # Track running processes
 
     def handle_client(self, client_socket, client_address):
         """Xử lý kết nối từ client"""
@@ -40,17 +39,15 @@ class SystemControlService:
 
         try:
             while True:
-                data = client_socket.recv(8192)  # Larger buffer for file transfers
+                data = client_socket.recv(1024)
                 if not data:
                     break
 
                 try:
                     command = json.loads(data.decode())
-                    logger.info(f"Received command: {command.get('action', 'unknown')}")
+                    logger.info(f"Received command: {command}")
 
-                    action = command.get('action')
-
-                    if action == 'ping':
+                    if command.get('action') == 'ping':
                         # Respond to ping for device discovery
                         self.send_response(client_socket, {
                             'action': 'pong',
@@ -59,53 +56,32 @@ class SystemControlService:
                         })
 
                     # FILE OPERATIONS
-                    elif action == 'upload_file':
-                        self.upload_file(command, client_socket)
-                    elif action == 'download_file':
-                        self.download_file(command, client_socket)
-                    elif action == 'list_files':
+                    elif command.get('action') == 'list_files':
                         self.list_files(command, client_socket)
-                    elif action == 'delete_file':
+                    elif command.get('action') == 'download_file':
+                        self.download_file(command, client_socket)
+                    elif command.get('action') == 'delete_file':
                         self.delete_file(command, client_socket)
-                    elif action == 'create_directory':
-                        self.create_directory(command, client_socket)
 
                     # SERVICE OPERATIONS
-                    elif action == 'start_service':
-                        self.start_service(command, client_socket)
-                    elif action == 'stop_service':
-                        self.stop_service(command, client_socket)
-                    elif action == 'restart_service':
-                        self.restart_service(command, client_socket)
-                    elif action == 'service_status':
-                        self.service_status(command, client_socket)
-                    elif action == 'enable_service':
-                        self.enable_service(command, client_socket)
-                    elif action == 'disable_service':
-                        self.disable_service(command, client_socket)
-                    elif action == 'list_services':
+                    elif command.get('action') == 'list_services':
                         self.list_services(client_socket)
+                    elif command.get('action') == 'start_service':
+                        self.start_service(command, client_socket)
+                    elif command.get('action') == 'stop_service':
+                        self.stop_service(command, client_socket)
+                    elif command.get('action') == 'restart_service':
+                        self.restart_service(command, client_socket)
+                    elif command.get('action') == 'service_status':
+                        self.service_status(command, client_socket)
 
                     # SCRIPT OPERATIONS
-                    elif action == 'execute_script':
-                        self.execute_script(command, client_socket)
-                    elif action == 'execute_command':
+                    elif command.get('action') == 'execute_command':
                         self.execute_command(command, client_socket)
-                    elif action == 'kill_script':
-                        self.kill_script(command, client_socket)
-                    elif action == 'list_running_scripts':
+                    elif command.get('action') == 'list_running_scripts':
                         self.list_running_scripts(client_socket)
-
-                    # SYSTEM INFO
-                    elif action == 'system_info':
-                        self.get_system_info(client_socket)
-                    elif action == 'disk_usage':
-                        self.get_disk_usage(command, client_socket)
-
-                    else:
-                        self.send_response(client_socket, {
-                            "error": f"Unknown action: {action}"
-                        })
+                    elif command.get('action') == 'kill_script':
+                        self.kill_script(command, client_socket)
 
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid JSON: {e}")
@@ -143,121 +119,10 @@ class SystemControlService:
     # FILE OPERATIONS
     # =============================================================================
 
-    def upload_file(self, command, client_socket):
-        """Upload file từ Flutter app lên Pi"""
-        try:
-            file_path = command.get('file_path')
-            content_base64 = command.get('content')
-            overwrite = command.get('overwrite', False)
-
-            if not file_path or not content_base64:
-                self.send_response(client_socket, {
-                    'action': 'upload_error',
-                    'error': 'Missing file_path or content'
-                })
-                return
-
-            # Check if file exists
-            if os.path.exists(file_path) and not overwrite:
-                self.send_response(client_socket, {
-                    'action': 'upload_error',
-                    'error': 'File already exists. Use overwrite=true to replace.'
-                })
-                return
-
-            # Decode base64 content
-            try:
-                file_content = base64.b64decode(content_base64)
-            except Exception as e:
-                self.send_response(client_socket, {
-                    'action': 'upload_error',
-                    'error': f'Invalid base64 content: {e}'
-                })
-                return
-
-            # Create directories if needed
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-            # Write file
-            with open(file_path, 'wb') as f:
-                f.write(file_content)
-
-            # Set permissions if specified
-            permissions = command.get('permissions')
-            if permissions:
-                os.chmod(file_path, int(permissions, 8))
-
-            file_size = len(file_content)
-            logger.info(f"File uploaded: {file_path} ({file_size} bytes)")
-
-            self.send_response(client_socket, {
-                'action': 'upload_success',
-                'file_path': file_path,
-                'size': file_size
-            })
-
-        except Exception as e:
-            logger.error(f"Error uploading file: {e}")
-            self.send_response(client_socket, {
-                'action': 'upload_error',
-                'error': str(e)
-            })
-
-    def download_file(self, command, client_socket):
-        """Download file từ Pi về Flutter app"""
-        try:
-            file_path = command.get('file_path')
-
-            if not file_path:
-                self.send_response(client_socket, {
-                    'action': 'download_error',
-                    'error': 'Missing file_path'
-                })
-                return
-
-            if not os.path.exists(file_path):
-                self.send_response(client_socket, {
-                    'action': 'download_error',
-                    'error': 'File not found'
-                })
-                return
-
-            if os.path.isdir(file_path):
-                self.send_response(client_socket, {
-                    'action': 'download_error',
-                    'error': 'Path is a directory, not a file'
-                })
-                return
-
-            # Read file and encode to base64
-            with open(file_path, 'rb') as f:
-                file_content = f.read()
-
-            content_base64 = base64.b64encode(file_content).decode()
-            file_stat = os.stat(file_path)
-
-            logger.info(f"File downloaded: {file_path} ({len(file_content)} bytes)")
-
-            self.send_response(client_socket, {
-                'action': 'download_success',
-                'file_path': file_path,
-                'content': content_base64,
-                'size': len(file_content),
-                'modified': file_stat.st_mtime,
-                'permissions': oct(file_stat.st_mode)[-3:]
-            })
-
-        except Exception as e:
-            logger.error(f"Error downloading file: {e}")
-            self.send_response(client_socket, {
-                'action': 'download_error',
-                'error': str(e)
-            })
-
     def list_files(self, command, client_socket):
         """List files trong directory"""
         try:
-            directory = command.get('directory', '/')
+            directory = command.get('directory', '/home/orangepi')
             show_hidden = command.get('show_hidden', False)
 
             if not os.path.exists(directory):
@@ -311,6 +176,57 @@ class SystemControlService:
                 'error': str(e)
             })
 
+    def download_file(self, command, client_socket):
+        """Download file từ Pi"""
+        try:
+            file_path = command.get('file_path')
+
+            if not file_path:
+                self.send_response(client_socket, {
+                    'action': 'download_error',
+                    'error': 'Missing file_path'
+                })
+                return
+
+            if not os.path.exists(file_path):
+                self.send_response(client_socket, {
+                    'action': 'download_error',
+                    'error': 'File not found'
+                })
+                return
+
+            if os.path.isdir(file_path):
+                self.send_response(client_socket, {
+                    'action': 'download_error',
+                    'error': 'Path is a directory, not a file'
+                })
+                return
+
+            # Read file and encode to base64
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+
+            content_base64 = base64.b64encode(file_content).decode()
+            file_stat = os.stat(file_path)
+
+            logger.info(f"File downloaded: {file_path} ({len(file_content)} bytes)")
+
+            self.send_response(client_socket, {
+                'action': 'download_success',
+                'file_path': file_path,
+                'content': content_base64,
+                'size': len(file_content),
+                'modified': file_stat.st_mtime,
+                'permissions': oct(file_stat.st_mode)[-3:]
+            })
+
+        except Exception as e:
+            logger.error(f"Error downloading file: {e}")
+            self.send_response(client_socket, {
+                'action': 'download_error',
+                'error': str(e)
+            })
+
     def delete_file(self, command, client_socket):
         """Delete file hoặc directory"""
         try:
@@ -355,41 +271,45 @@ class SystemControlService:
                 'error': str(e)
             })
 
-    def create_directory(self, command, client_socket):
-        """Tạo directory mới"""
-        try:
-            directory = command.get('directory')
-            parents = command.get('parents', True)
-
-            if not directory:
-                self.send_response(client_socket, {
-                    'action': 'mkdir_error',
-                    'error': 'Missing directory path'
-                })
-                return
-
-            if parents:
-                os.makedirs(directory, exist_ok=True)
-            else:
-                os.mkdir(directory)
-
-            logger.info(f"Directory created: {directory}")
-
-            self.send_response(client_socket, {
-                'action': 'mkdir_success',
-                'directory': directory
-            })
-
-        except Exception as e:
-            logger.error(f"Error creating directory: {e}")
-            self.send_response(client_socket, {
-                'action': 'mkdir_error',
-                'error': str(e)
-            })
-
     # =============================================================================
     # SERVICE OPERATIONS
     # =============================================================================
+
+    def list_services(self, client_socket):
+        """List all systemd services"""
+        try:
+            result = subprocess.run(
+                ['systemctl', 'list-units', '--type=service', '--no-pager'],
+                capture_output=True,
+                text=True
+            )
+
+            services = []
+            for line in result.stdout.split('\n'):
+                if '.service' in line:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        service_info = {
+                            'name': parts[0],
+                            'load': parts[1],
+                            'active': parts[2],
+                            'sub': parts[3],
+                            'description': ' '.join(parts[4:]) if len(parts) > 4 else ''
+                        }
+                        services.append(service_info)
+
+            self.send_response(client_socket, {
+                'action': 'services_list',
+                'services': services,
+                'total_count': len(services)
+            })
+
+        except Exception as e:
+            logger.error(f"Error listing services: {e}")
+            self.send_response(client_socket, {
+                'action': 'service_error',
+                'error': str(e)
+            })
 
     def start_service(self, command, client_socket):
         """Start systemd service"""
@@ -565,220 +485,15 @@ class SystemControlService:
                 'error': str(e)
             })
 
-    def enable_service(self, command, client_socket):
-        """Enable systemd service (auto-start on boot)"""
-        try:
-            service_name = command.get('service_name')
-
-            if not service_name:
-                self.send_response(client_socket, {
-                    'action': 'service_error',
-                    'error': 'Missing service_name'
-                })
-                return
-
-            result = subprocess.run(
-                ['sudo', 'systemctl', 'enable', service_name],
-                capture_output=True,
-                text=True
-            )
-
-            if result.returncode == 0:
-                logger.info(f"Service enabled: {service_name}")
-                self.send_response(client_socket, {
-                    'action': 'service_success',
-                    'operation': 'enable',
-                    'service_name': service_name,
-                    'message': f'Service {service_name} enabled successfully'
-                })
-            else:
-                self.send_response(client_socket, {
-                    'action': 'service_error',
-                    'operation': 'enable',
-                    'service_name': service_name,
-                    'error': result.stderr
-                })
-
-        except Exception as e:
-            logger.error(f"Error enabling service: {e}")
-            self.send_response(client_socket, {
-                'action': 'service_error',
-                'error': str(e)
-            })
-
-    def disable_service(self, command, client_socket):
-        """Disable systemd service"""
-        try:
-            service_name = command.get('service_name')
-
-            if not service_name:
-                self.send_response(client_socket, {
-                    'action': 'service_error',
-                    'error': 'Missing service_name'
-                })
-                return
-
-            result = subprocess.run(
-                ['sudo', 'systemctl', 'disable', service_name],
-                capture_output=True,
-                text=True
-            )
-
-            if result.returncode == 0:
-                logger.info(f"Service disabled: {service_name}")
-                self.send_response(client_socket, {
-                    'action': 'service_success',
-                    'operation': 'disable',
-                    'service_name': service_name,
-                    'message': f'Service {service_name} disabled successfully'
-                })
-            else:
-                self.send_response(client_socket, {
-                    'action': 'service_error',
-                    'operation': 'disable',
-                    'service_name': service_name,
-                    'error': result.stderr
-                })
-
-        except Exception as e:
-            logger.error(f"Error disabling service: {e}")
-            self.send_response(client_socket, {
-                'action': 'service_error',
-                'error': str(e)
-            })
-
-    def list_services(self, client_socket):
-        """List all systemd services"""
-        try:
-            result = subprocess.run(
-                ['systemctl', 'list-units', '--type=service', '--no-pager'],
-                capture_output=True,
-                text=True
-            )
-
-            services = []
-            for line in result.stdout.split('\n'):
-                if '.service' in line:
-                    parts = line.split()
-                    if len(parts) >= 4:
-                        service_info = {
-                            'name': parts[0],
-                            'load': parts[1],
-                            'active': parts[2],
-                            'sub': parts[3],
-                            'description': ' '.join(parts[4:]) if len(parts) > 4 else ''
-                        }
-                        services.append(service_info)
-
-            self.send_response(client_socket, {
-                'action': 'services_list',
-                'services': services,
-                'total_count': len(services)
-            })
-
-        except Exception as e:
-            logger.error(f"Error listing services: {e}")
-            self.send_response(client_socket, {
-                'action': 'service_error',
-                'error': str(e)
-            })
-
     # =============================================================================
     # SCRIPT OPERATIONS
     # =============================================================================
-
-    def execute_script(self, command, client_socket):
-        """Execute shell script"""
-        try:
-            script_path = command.get('script_path')
-            args = command.get('args', [])
-            background = command.get('background', False)
-            working_dir = command.get('working_dir', None)
-
-            if not script_path:
-                self.send_response(client_socket, {
-                    'action': 'script_error',
-                    'error': 'Missing script_path'
-                })
-                return
-
-            if not os.path.exists(script_path):
-                self.send_response(client_socket, {
-                    'action': 'script_error',
-                    'error': 'Script file not found'
-                })
-                return
-
-            # Make script executable
-            os.chmod(script_path, 0o755)
-
-            cmd = [script_path] + args
-
-            if background:
-                # Run in background
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    cwd=working_dir
-                )
-
-                script_id = f"{script_path}_{process.pid}_{int(time.time())}"
-                self.running_scripts[script_id] = {
-                    'process': process,
-                    'script_path': script_path,
-                    'args': args,
-                    'started': time.time()
-                }
-
-                logger.info(f"Script started in background: {script_path} (PID: {process.pid})")
-
-                self.send_response(client_socket, {
-                    'action': 'script_started',
-                    'script_id': script_id,
-                    'script_path': script_path,
-                    'pid': process.pid
-                })
-
-            else:
-                # Run and wait for completion
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    cwd=working_dir,
-                    timeout=300  # 5 minute timeout
-                )
-
-                logger.info(f"Script executed: {script_path} (exit code: {result.returncode})")
-
-                self.send_response(client_socket, {
-                    'action': 'script_completed',
-                    'script_path': script_path,
-                    'exit_code': result.returncode,
-                    'stdout': result.stdout,
-                    'stderr': result.stderr
-                })
-
-        except subprocess.TimeoutExpired:
-            self.send_response(client_socket, {
-                'action': 'script_error',
-                'error': 'Script execution timeout (5 minutes)'
-            })
-        except Exception as e:
-            logger.error(f"Error executing script: {e}")
-            self.send_response(client_socket, {
-                'action': 'script_error',
-                'error': str(e)
-            })
 
     def execute_command(self, command, client_socket):
         """Execute shell command"""
         try:
             cmd = command.get('command')
             background = command.get('background', False)
-            working_dir = command.get('working_dir', None)
 
             if not cmd:
                 self.send_response(client_socket, {
@@ -794,8 +509,7 @@ class SystemControlService:
                     shell=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    text=True,
-                    cwd=working_dir
+                    text=True
                 )
 
                 cmd_id = f"cmd_{process.pid}_{int(time.time())}"
@@ -822,8 +536,7 @@ class SystemControlService:
                     shell=True,
                     capture_output=True,
                     text=True,
-                    cwd=working_dir,
-                    timeout=60  # 1 minute timeout for commands
+                    timeout=60  # 1 minute timeout
                 )
 
                 logger.info(f"Command executed: {cmd} (exit code: {result.returncode})")
@@ -845,6 +558,43 @@ class SystemControlService:
             logger.error(f"Error executing command: {e}")
             self.send_response(client_socket, {
                 'action': 'command_error',
+                'error': str(e)
+            })
+
+    def list_running_scripts(self, client_socket):
+        """List all running scripts"""
+        try:
+            # Clean up finished processes
+            finished_scripts = []
+            for script_id, script_info in self.running_scripts.items():
+                if script_info['process'].poll() is not None:
+                    finished_scripts.append(script_id)
+
+            for script_id in finished_scripts:
+                del self.running_scripts[script_id]
+
+            # Prepare response
+            running_scripts = []
+            for script_id, script_info in self.running_scripts.items():
+                running_scripts.append({
+                    'script_id': script_id,
+                    'script_path': script_info['script_path'],
+                    'args': script_info['args'],
+                    'pid': script_info['process'].pid,
+                    'started': script_info['started'],
+                    'running_time': time.time() - script_info['started']
+                })
+
+            self.send_response(client_socket, {
+                'action': 'running_scripts',
+                'scripts': running_scripts,
+                'total_count': len(running_scripts)
+            })
+
+        except Exception as e:
+            logger.error(f"Error listing running scripts: {e}")
+            self.send_response(client_socket, {
+                'action': 'script_error',
                 'error': str(e)
             })
 
@@ -891,148 +641,6 @@ class SystemControlService:
             logger.error(f"Error killing script: {e}")
             self.send_response(client_socket, {
                 'action': 'kill_error',
-                'error': str(e)
-            })
-
-    def list_running_scripts(self, client_socket):
-        """List all running scripts"""
-        try:
-            # Clean up finished processes
-            finished_scripts = []
-            for script_id, script_info in self.running_scripts.items():
-                if script_info['process'].poll() is not None:
-                    finished_scripts.append(script_id)
-
-            for script_id in finished_scripts:
-                del self.running_scripts[script_id]
-
-            # Prepare response
-            running_scripts = []
-            for script_id, script_info in self.running_scripts.items():
-                running_scripts.append({
-                    'script_id': script_id,
-                    'script_path': script_info['script_path'],
-                    'args': script_info['args'],
-                    'pid': script_info['process'].pid,
-                    'started': script_info['started'],
-                    'running_time': time.time() - script_info['started']
-                })
-
-            self.send_response(client_socket, {
-                'action': 'running_scripts',
-                'scripts': running_scripts,
-                'total_count': len(running_scripts)
-            })
-
-        except Exception as e:
-            logger.error(f"Error listing running scripts: {e}")
-            self.send_response(client_socket, {
-                'action': 'script_error',
-                'error': str(e)
-            })
-
-    # =============================================================================
-    # SYSTEM INFO
-    # =============================================================================
-
-    def get_system_info(self, client_socket):
-        """Get system information"""
-        try:
-            import platform
-            import psutil
-
-            # CPU info
-            cpu_info = {
-                'count': psutil.cpu_count(),
-                'usage_percent': psutil.cpu_percent(interval=1),
-                'freq': psutil.cpu_freq()._asdict() if psutil.cpu_freq() else None
-            }
-
-            # Memory info
-            memory = psutil.virtual_memory()
-            memory_info = {
-                'total': memory.total,
-                'available': memory.available,
-                'used': memory.used,
-                'percent': memory.percent
-            }
-
-            # Disk info
-            disk = psutil.disk_usage('/')
-            disk_info = {
-                'total': disk.total,
-                'used': disk.used,
-                'free': disk.free,
-                'percent': (disk.used / disk.total) * 100
-            }
-
-            # Network info
-            network = psutil.net_io_counters()
-            network_info = {
-                'bytes_sent': network.bytes_sent,
-                'bytes_recv': network.bytes_recv,
-                'packets_sent': network.packets_sent,
-                'packets_recv': network.packets_recv
-            }
-
-            # System info
-            system_info = {
-                'platform': platform.platform(),
-                'machine': platform.machine(),
-                'processor': platform.processor(),
-                'hostname': platform.node(),
-                'uptime': time.time() - psutil.boot_time()
-            }
-
-            self.send_response(client_socket, {
-                'action': 'system_info',
-                'cpu': cpu_info,
-                'memory': memory_info,
-                'disk': disk_info,
-                'network': network_info,
-                'system': system_info,
-                'timestamp': time.time()
-            })
-
-        except Exception as e:
-            logger.error(f"Error getting system info: {e}")
-            self.send_response(client_socket, {
-                'action': 'system_error',
-                'error': str(e)
-            })
-
-    def get_disk_usage(self, command, client_socket):
-        """Get disk usage for specific path"""
-        try:
-            path = command.get('path', '/')
-
-            if not os.path.exists(path):
-                self.send_response(client_socket, {
-                    'action': 'disk_error',
-                    'error': 'Path not found'
-                })
-                return
-
-            import psutil
-            disk = psutil.disk_usage(path)
-
-            disk_info = {
-                'path': path,
-                'total': disk.total,
-                'used': disk.used,
-                'free': disk.free,
-                'percent': (disk.used / disk.total) * 100
-            }
-
-            self.send_response(client_socket, {
-                'action': 'disk_usage',
-                'disk_info': disk_info
-            })
-
-        except Exception as e:
-            logger.error(f"Error getting disk usage: {e}")
-            self.send_response(client_socket, {
-                'action': 'disk_error',
                 'error': str(e)
             })
 
