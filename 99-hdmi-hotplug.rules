@@ -1,0 +1,2 @@
+# /etc/udev/rules.d/99-hdmi-hotplug.rules
+ACTION=="change", SUBSYSTEM=="drm", ENV{HOTPLUG}=="1", RUN+="/usr/local/bin/rotate-screen.sh"
