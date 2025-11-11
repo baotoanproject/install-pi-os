@@ -12,6 +12,8 @@ import threading
 import logging
 import time
 import os
+import hashlib
+import base64
 from datetime import datetime
 
 # Setup logging
@@ -22,10 +24,20 @@ logger = logging.getLogger(__name__)
 HOST = '0.0.0.0'
 PORT = 8767
 
+# File transfer configuration
+UPLOAD_DIR = '/home/orangepi'
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+CHUNK_SIZE = 64 * 1024  # 64KB chunks
+
 class RemoteControlService:
     def __init__(self):
         self.clients = []
         self.server_socket = None
+        self.active_transfers = {}
+        self.transfer_id_counter = 0
+
+        # Ensure upload directory exists
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
 
     def handle_client(self, client_socket, client_address):
         """Xử lý kết nối từ client"""
@@ -49,6 +61,10 @@ class RemoteControlService:
                             'service': 'orangepi-remote-control',
                             'version': '1.0'
                         })
+                    elif command.get('action') == 'upload_file':
+                        self.handle_file_upload(command, client_socket)
+                    elif command.get('action') == 'list_files':
+                        self.list_uploaded_files(client_socket)
 
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid JSON: {e}")
@@ -81,6 +97,117 @@ class RemoteControlService:
             except:
                 if client in self.clients:
                     self.clients.remove(client)
+
+    def generate_transfer_id(self):
+        """Tạo unique transfer ID"""
+        self.transfer_id_counter += 1
+        return f"transfer_{self.transfer_id_counter}_{int(time.time())}"
+
+    def handle_file_upload(self, command, client_socket):
+        """Xử lý upload file từ Flutter app"""
+        try:
+            filename = command.get('filename')
+            file_data_b64 = command.get('file_data')
+            file_size = command.get('file_size', 0)
+
+            if not filename or not file_data_b64:
+                self.send_response(client_socket, {
+                    'action': 'upload_error',
+                    'error': 'Missing filename or file_data'
+                })
+                return
+
+            if file_size > MAX_FILE_SIZE:
+                self.send_response(client_socket, {
+                    'action': 'upload_error',
+                    'error': f'File too large. Max size: {MAX_FILE_SIZE} bytes'
+                })
+                return
+
+            # Decode file data
+            try:
+                file_data = base64.b64decode(file_data_b64)
+                actual_size = len(file_data)
+
+                if file_size > 0 and actual_size != file_size:
+                    logger.warning(f"File size mismatch: expected {file_size}, got {actual_size}")
+
+            except Exception as e:
+                self.send_response(client_socket, {
+                    'action': 'upload_error',
+                    'error': f'Invalid base64 data: {e}'
+                })
+                return
+
+            # Create file path
+            file_path = os.path.join(UPLOAD_DIR, filename)
+
+            # Check if file already exists, create unique name if needed
+            if os.path.exists(file_path):
+                name, ext = os.path.splitext(filename)
+                counter = 1
+                while os.path.exists(file_path):
+                    new_filename = f"{name}_{counter}{ext}"
+                    file_path = os.path.join(UPLOAD_DIR, new_filename)
+                    counter += 1
+                filename = os.path.basename(file_path)
+
+            # Write file
+            with open(file_path, 'wb') as f:
+                f.write(file_data)
+
+            # Calculate MD5 for verification
+            md5_hash = hashlib.md5(file_data).hexdigest()
+
+            logger.info(f"File uploaded successfully: {filename} ({actual_size} bytes)")
+
+            self.send_response(client_socket, {
+                'action': 'upload_success',
+                'filename': filename,
+                'file_path': file_path,
+                'file_size': actual_size,
+                'md5_hash': md5_hash
+            })
+
+        except Exception as e:
+            logger.error(f"Error handling file upload: {e}")
+            self.send_response(client_socket, {
+                'action': 'upload_error',
+                'error': str(e)
+            })
+
+    def list_uploaded_files(self, client_socket):
+        """Liệt kê files đã upload"""
+        try:
+            if not os.path.exists(UPLOAD_DIR):
+                files = []
+            else:
+                files = []
+                for filename in os.listdir(UPLOAD_DIR):
+                    file_path = os.path.join(UPLOAD_DIR, filename)
+                    if os.path.isfile(file_path):
+                        stat = os.stat(file_path)
+                        files.append({
+                            'filename': filename,
+                            'file_path': file_path,
+                            'size': stat.st_size,
+                            'modified_time': stat.st_mtime,
+                            'created_time': stat.st_ctime
+                        })
+
+            self.send_response(client_socket, {
+                'action': 'file_list',
+                'files': files,
+                'upload_dir': UPLOAD_DIR,
+                'total_files': len(files)
+            })
+
+        except Exception as e:
+            logger.error(f"Error listing files: {e}")
+            self.send_response(client_socket, {
+                'action': 'file_list_error',
+                'error': str(e)
+            })
 
     def setup_mdns_advertisement(self):
         """Setup mDNS advertisement để Flutter app có thể tự động tìm thấy"""
