@@ -1,9 +1,6 @@
 #!/bin/bash
-# Reload HDMI driver if disconnected
 
-# --- chỉnh tên module HDMI đúng của bạn ở đây ---
 MOD=sun8i_dw_hdmi
-# -------------------------------------------------
 
 STATUS_FILE="/sys/class/drm/card0-HDMI-A-1/status"
 
