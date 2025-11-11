@@ -33,8 +33,6 @@ class RemoteControlService:
     def __init__(self):
         self.clients = []
         self.server_socket = None
-        self.active_transfers = {}
-        self.transfer_id_counter = 0
 
         # Ensure upload directory exists
         os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -97,11 +95,6 @@ class RemoteControlService:
             except:
                 if client in self.clients:
                     self.clients.remove(client)
-
-    def generate_transfer_id(self):
-        """Tạo unique transfer ID"""
-        self.transfer_id_counter += 1
-        return f"transfer_{self.transfer_id_counter}_{int(time.time())}"
 
     def handle_file_upload(self, command, client_socket):
         """Xử lý upload file từ Flutter app"""
@@ -259,7 +252,23 @@ class RemoteControlService:
 
         # Lấy IP thực tế
         hostname = socket.gethostname()
-        local_ip = socket.gethostbyname(hostname)
+        try:
+            # Connect to a remote address to get local IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            local_ip = socket.gethostbyname(hostname)
+
+        print(f"\n{'='*50}")
+        print(f"🚀 Remote Control Service STARTED")
+        print(f"{'='*50}")
+        print(f"📡 Listening on: {HOST}:{PORT}")
+        print(f"🌐 Local IP: {local_ip}")
+        print(f"🏠 Hostname: {hostname}")
+        print(f"📱 Flutter app connect to: {local_ip}:{PORT}")
+        print(f"{'='*50}\n")
 
         logger.info(f"Remote Control Service listening on {HOST}:{PORT}")
         logger.info(f"Local IP: {local_ip}")
