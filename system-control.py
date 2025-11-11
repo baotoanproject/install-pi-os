@@ -108,8 +108,8 @@ class RemoteControlService:
         logger.info(f"Client connected from {client_address}")
         self.clients.append(client_socket)
 
-        # Set socket timeout
-        client_socket.settimeout(60.0)  # 60 seconds timeout
+        # Set socket timeout to None (no timeout)
+        client_socket.settimeout(None)
 
         try:
             while True:
