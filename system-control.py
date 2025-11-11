@@ -139,6 +139,10 @@ class RemoteControlService:
                         self.list_uploaded_files(client_socket)
                     elif action == 'execute_script':
                         self.handle_script_execution(command, client_socket)
+                    elif action == 'list_services':
+                        self.list_custom_services(client_socket)
+                    elif action == 'manage_service':
+                        self.handle_service_management(command, client_socket)
                     else:
                         logger.warning(f"Unknown action: {action}")
                         self.send_response(client_socket, {
@@ -414,6 +418,178 @@ class RemoteControlService:
             logger.error(f"Error handling script execution: {e}")
             self.send_response(client_socket, {
                 'action': 'script_error',
+                'error': str(e)
+            })
+
+    def list_custom_services(self, client_socket):
+        """Liệt kê custom services từ /etc/systemd/system/"""
+        try:
+            services = []
+            systemd_dir = '/etc/systemd/system'
+
+            if os.path.exists(systemd_dir):
+                # Danh sách service cần lọc (hệ thống)
+                system_services = {
+                    'dbus.service', 'systemd-', 'getty@', 'network', 'ssh', 'bluetooth',
+                    'avahi-', 'cups-', 'plymouth-', 'udev-', 'ModemManager', 'NetworkManager',
+                    'accounts-daemon', 'polkit', 'udisks2', 'packagekit', 'snapd',
+                    'rsyslog', 'cron', 'atd', 'smartmontools', 'thermald'
+                }
+
+                for filename in os.listdir(systemd_dir):
+                    if filename.endswith('.service'):
+                        # Bỏ qua system services
+                        is_system = any(sys_service in filename for sys_service in system_services)
+                        if is_system:
+                            continue
+
+                        service_path = os.path.join(systemd_dir, filename)
+                        if os.path.isfile(service_path):
+                            try:
+                                # Lấy status service
+                                result = subprocess.run(
+                                    ['systemctl', 'is-active', filename],
+                                    capture_output=True,
+                                    text=True
+                                )
+                                status = result.stdout.strip()
+
+                                # Lấy enabled status
+                                enabled_result = subprocess.run(
+                                    ['systemctl', 'is-enabled', filename],
+                                    capture_output=True,
+                                    text=True
+                                )
+                                enabled = enabled_result.stdout.strip()
+
+                                # Đọc description từ service file
+                                description = "Custom service"
+                                try:
+                                    with open(service_path, 'r') as f:
+                                        content = f.read()
+                                        for line in content.split('\n'):
+                                            if line.strip().startswith('Description='):
+                                                description = line.split('=', 1)[1].strip()
+                                                break
+                                except:
+                                    pass
+
+                                services.append({
+                                    'name': filename,
+                                    'status': status,
+                                    'enabled': enabled,
+                                    'description': description,
+                                    'path': service_path
+                                })
+
+                            except Exception as e:
+                                logger.warning(f"Could not get status for {filename}: {e}")
+                                services.append({
+                                    'name': filename,
+                                    'status': 'unknown',
+                                    'enabled': 'unknown',
+                                    'description': 'Custom service',
+                                    'path': service_path
+                                })
+
+            self.send_response(client_socket, {
+                'action': 'services_list',
+                'services': services,
+                'total': len(services)
+            })
+
+            logger.info(f"Listed {len(services)} custom services")
+
+        except Exception as e:
+            logger.error(f"Error listing services: {e}")
+            self.send_response(client_socket, {
+                'action': 'services_error',
+                'error': str(e)
+            })
+
+    def handle_service_management(self, command, client_socket):
+        """Quản lý services (start/stop/restart)"""
+        try:
+            service_name = command.get('service_name')
+            service_action = command.get('service_action')
+
+            if not service_name or not service_action:
+                self.send_response(client_socket, {
+                    'action': 'service_error',
+                    'error': 'Missing service_name or service_action'
+                })
+                return
+
+            # Validate action
+            valid_actions = ['start', 'stop', 'restart', 'status', 'enable', 'disable']
+            if service_action not in valid_actions:
+                self.send_response(client_socket, {
+                    'action': 'service_error',
+                    'error': f'Invalid action. Valid actions: {valid_actions}'
+                })
+                return
+
+            # Validate service exists
+            service_path = f'/etc/systemd/system/{service_name}'
+            if not os.path.exists(service_path):
+                self.send_response(client_socket, {
+                    'action': 'service_error',
+                    'error': f'Service {service_name} not found'
+                })
+                return
+
+            logger.info(f"Managing service: {service_name} -> {service_action}")
+
+            # Execute systemctl command with sudo
+            try:
+                if service_action == 'status':
+                    cmd = ['systemctl', 'status', service_name]
+                else:
+                    cmd = ['sudo', 'systemctl', service_action, service_name]
+
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
+                # Get current status after action
+                status_result = subprocess.run(
+                    ['systemctl', 'is-active', service_name],
+                    capture_output=True,
+                    text=True
+                )
+                current_status = status_result.stdout.strip()
+
+                self.send_response(client_socket, {
+                    'action': 'service_success',
+                    'service_name': service_name,
+                    'service_action': service_action,
+                    'return_code': result.returncode,
+                    'stdout': result.stdout,
+                    'stderr': result.stderr,
+                    'current_status': current_status
+                })
+
+                logger.info(f"Service {service_name} {service_action} completed (exit: {result.returncode})")
+
+            except subprocess.TimeoutExpired:
+                self.send_response(client_socket, {
+                    'action': 'service_error',
+                    'error': 'Service operation timeout (30s)'
+                })
+
+            except Exception as e:
+                self.send_response(client_socket, {
+                    'action': 'service_error',
+                    'error': f'Operation failed: {e}'
+                })
+
+        except Exception as e:
+            logger.error(f"Error handling service management: {e}")
+            self.send_response(client_socket, {
+                'action': 'service_error',
                 'error': str(e)
             })
 
