@@ -1,0 +1,14 @@
+[Unit]
+Description=Auto rotate screen
+After=graphical.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/auto-rotate-monitor.sh
+Restart=always
+RestartSec=2
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/orangepi/.Xauthority
+
+[Install]
+WantedBy=graphical.target
