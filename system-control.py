@@ -137,6 +137,8 @@ class RemoteControlService:
                         self.handle_file_upload(command, client_socket)
                     elif action == 'list_files':
                         self.list_uploaded_files(client_socket)
+                    elif action == 'execute_script':
+                        self.handle_script_execution(command, client_socket)
                     else:
                         logger.warning(f"Unknown action: {action}")
                         self.send_response(client_socket, {
@@ -350,6 +352,68 @@ class RemoteControlService:
             logger.error(f"Error listing files: {e}")
             self.send_response(client_socket, {
                 'action': 'file_list_error',
+                'error': str(e)
+            })
+
+    def handle_script_execution(self, command, client_socket):
+        """Thực thi script trên thiết bị"""
+        try:
+            script_path = command.get('script_path')
+
+            if not script_path:
+                self.send_response(client_socket, {
+                    'action': 'script_error',
+                    'error': 'Missing script_path'
+                })
+                return
+
+            # Kiểm tra file script có tồn tại không
+            if not os.path.exists(script_path):
+                self.send_response(client_socket, {
+                    'action': 'script_error',
+                    'error': f'Script not found: {script_path}'
+                })
+                return
+
+            logger.info(f"Executing script: {script_path}")
+
+            # Thực thi script
+            try:
+                result = subprocess.run(
+                    ['bash', script_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=30  # 30 seconds timeout
+                )
+
+                self.send_response(client_socket, {
+                    'action': 'script_success',
+                    'script_path': script_path,
+                    'return_code': result.returncode,
+                    'stdout': result.stdout,
+                    'stderr': result.stderr
+                })
+
+                logger.info(f"Script executed successfully: {script_path} (exit code: {result.returncode})")
+
+            except subprocess.TimeoutExpired:
+                self.send_response(client_socket, {
+                    'action': 'script_error',
+                    'error': 'Script execution timeout (30s)'
+                })
+                logger.error(f"Script timeout: {script_path}")
+
+            except Exception as e:
+                self.send_response(client_socket, {
+                    'action': 'script_error',
+                    'error': f'Execution failed: {e}'
+                })
+                logger.error(f"Script execution error: {e}")
+
+        except Exception as e:
+            logger.error(f"Error handling script execution: {e}")
+            self.send_response(client_socket, {
+                'action': 'script_error',
                 'error': str(e)
             })
 
