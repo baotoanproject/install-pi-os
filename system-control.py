@@ -425,10 +425,11 @@ class RemoteControlService:
             if os.path.exists(systemd_dir):
                 # Danh sách service cần lọc (hệ thống)
                 system_services = {
-                    'dbus.service', 'systemd-', 'getty@', 'network', 'ssh', 'bluetooth',
+                    'dbus.service', 'dbus-', 'systemd-', 'getty@', 'network', 'ssh', 'bluetooth',
                     'avahi-', 'cups-', 'plymouth-', 'udev-', 'ModemManager', 'NetworkManager',
                     'accounts-daemon', 'polkit', 'udisks2', 'packagekit', 'snapd',
-                    'rsyslog', 'cron', 'atd', 'smartmontools', 'thermald'
+                    'rsyslog', 'cron', 'atd', 'smartmontools', 'thermald', 'display', 'chronyd',
+                    'log', 'smartd'
                 }
 
                 for filename in os.listdir(systemd_dir):
