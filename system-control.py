@@ -540,15 +540,22 @@ class RemoteControlService:
             try:
                 if service_action == 'status':
                     cmd = ['systemctl', 'status', service_name]
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
                 else:
-                    cmd = ['sudo', 'systemctl', service_action, service_name]
-
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
+                    # Use echo password | sudo -S for non-interactive sudo
+                    cmd = f"echo '{SUDO_PASSWORD}' | sudo -S systemctl {service_action} {service_name}"
+                    result = subprocess.run(
+                        cmd,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
 
                 # Get current status after action
                 status_result = subprocess.run(
