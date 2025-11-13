@@ -1,0 +1,16 @@
+[Unit]
+Description=System remote
+After=network.target graphical.target
+
+[Service]
+Type=simple
+User=orangepi
+Group=orangepi
+WorkingDirectory=/home/orangepi
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/orangepi/.Xauthority
+ExecStart=/usr/bin/python3 /home/orangepi/system-control.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
