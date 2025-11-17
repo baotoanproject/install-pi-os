@@ -1,18 +1,51 @@
 #!/bin/bash
 
-DISPLAY=:0
-XAUTHORITY=/home/orangepi/.Xauthority
-HDMI_OUTPUT="HDMI-1"
+# Set display environment
+export DISPLAY=:0
+export XAUTHORITY=/home/orangepi/.Xauthority
 
-STATUS=$(xrandr | grep "^$HDMI_OUTPUT" | awk '{print $2}')
+# Lock file to prevent concurrent executions
+LOCK_FILE="/tmp/rotate-screen.lock"
 
-if [ "$STATUS" == "disconnected" ]; then
-    echo "HDMI chưa kết nối, thử reset..."
-    xrandr --output $HDMI_OUTPUT --off
-    sleep 1
-    xrandr --output $HDMI_OUTPUT --auto
-    sleep 1
+# Check if another instance is running
+if [ -f "$LOCK_FILE" ]; then
+    echo "Another rotation process is running. Exiting."
+    exit 1
 fi
 
-xrandr --output $HDMI_OUTPUT --rotate left
-echo "Hoàn tất reset & xoay màn hình."
+# Create lock file
+touch "$LOCK_FILE"
+
+# Cleanup function
+cleanup() {
+    rm -f "$LOCK_FILE"
+}
+
+# Set trap to cleanup on exit
+trap cleanup EXIT
+
+# Wait a moment to ensure X server is ready
+sleep 0.5
+
+# Check if display is available
+if ! xrandr --query &>/dev/null; then
+    echo "Error: Cannot connect to display"
+    exit 1
+fi
+
+# Check if HDMI-1 output exists
+if ! xrandr --query | grep -q "HDMI-1"; then
+    echo "Error: HDMI-1 output not found"
+    exit 1
+fi
+
+# Perform the rotation with error handling
+if xrandr --output HDMI-1 --rotate left; then
+    echo "Screen rotated successfully"
+else
+    echo "Error: Failed to rotate screen"
+    exit 1
+fi
+
+# Small delay to allow X server to process the change
+sleep 0.2
